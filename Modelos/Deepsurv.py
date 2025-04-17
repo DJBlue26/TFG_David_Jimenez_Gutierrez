@@ -9,9 +9,11 @@ from tensorflow import keras
 from keras.models import Sequential
 from keras.layers import Dense, Dropout
 from sksurv.metrics import concordance_index_censored
+from sklearn.inspection import permutation_importance
+from lifelines import KaplanMeierFitter, CoxPHFitter
 
 # Cargar los datos
-df = pd.read_excel('C:\\David\\CUARTO\\TFG DAVID\\TFG DAVID\\TFG\\TFG_David_Jimenez_Gutierrez\\Datos\\TCGAE_Todo.xlsx')
+df = pd.read_excel('C:\David\CUARTO\TFG DAVID\TFG DAVID\TFG\TFG_David_Jimenez_Gutierrez\Datos\TCGAE_Todo.xlsx')
 
 X = df.drop(['Recurrencia', 'DFI'], axis=1)
 y = df.loc[:, ['Recurrencia', 'DFI']]
@@ -44,7 +46,7 @@ def create_deepsurv_model(input_dim):
 best_seed = None
 best_c_index = 0
 
-for seed in range(30, 50):  # Prueba diferentes valores de semilla
+for seed in range(1, 100):  # Prueba diferentes valores de semilla
     np.random.seed(seed)
     tf.random.set_seed(seed)
     random.seed(seed)
@@ -77,20 +79,50 @@ pred_risk = model.predict(X_test)
 c_index = concordance_index_censored(y_test['Recurrencia'], y_test['DFI'], -pred_risk[:, 0])[0]
 print(f"\nC-index final con mejor semilla ({best_seed}): {c_index:.3f}")
 
+# Cálculo de la importancia de las variables mediante permutación
+def feature_importance(model, X_test, y_test, num_repeats=5):
+    def scoring_function(X_perm):
+        pred_risk = model.predict(X_perm)
+        return concordance_index_censored(y_test['Recurrencia'], y_test['DFI'], -pred_risk[:, 0])[0]
+    
+    base_score = scoring_function(X_test)
+    importances = {}
+    
+    for i in range(X_test.shape[1]):
+        scores = []
+        for _ in range(num_repeats):
+            X_perm = X_test.copy()
+            np.random.shuffle(X_perm[:, i])
+            scores.append(scoring_function(X_perm))
+        importances[X.columns[i]] = base_score - np.mean(scores)
+    
+    return importances
+
+feature_importances = feature_importance(model, X_test, y_test)
+feature_importances = pd.Series(feature_importances).sort_values(ascending=False)
+print("\nImportancia de las variables:")
+print(feature_importances.head(10))  # Mostrar las 10 variables más importantes
+
 # Normalización del riesgo para evitar valores extremos en las curvas
 pred_risk = (pred_risk - np.min(pred_risk)) / (np.max(pred_risk) - np.min(pred_risk))
 
-# Generar curvas de supervivencia ajustadas
-time_range = np.linspace(0, 3650, 100)  # 10 años en días
-surv_funcs = np.exp(-np.exp(-pred_risk[:, np.newaxis]) * time_range)
+# Generar curvas de supervivencia ajustadas con Kaplan-Meier
+kmf = KaplanMeierFitter()
+kmf.fit(y_test['DFI'], event_observed=y_test['Recurrencia'])
 
-# Graficar las curvas de supervivencia
 plt.figure(figsize=(8, 6))
-for surv in surv_funcs:
-    plt.step(time_range, surv.flatten(), where="post", alpha=0.5)
-
-plt.ylim(0, 1)
+kmf.plot_survival_function()
+plt.title("Curva de Supervivencia - Kaplan-Meier")
 plt.xlabel("Tiempo (días)")
 plt.ylabel("Probabilidad de Supervivencia")
-plt.title("Curvas de Supervivencia por Paciente - DeepSurv")
+plt.show()
+
+# Generar curvas de supervivencia ajustadas con modelo de Cox
+cox_df = pd.DataFrame(X_test, columns=X.columns)
+cox_df['DFI'] = y_test['DFI']
+cox_df['Recurrencia'] = y_test['Recurrencia']
+cox_model = CoxPHFitter()
+cox_model.fit(cox_df, duration_col='DFI', event_col='Recurrencia')
+cox_model.plot_survival_function()
+plt.title("Curva de Supervivencia - Modelo de Cox")
 plt.show()
