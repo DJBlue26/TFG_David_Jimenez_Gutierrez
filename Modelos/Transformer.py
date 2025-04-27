@@ -8,19 +8,15 @@ import torch.optim as optim
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sksurv.metrics import concordance_index_censored
+from lifelines import CoxPHFitter
 
-# Cargar los datos
+# Carga y preparación de los datos
 df = pd.read_excel('C:\\David\\CUARTO\\TFG DAVID\\TFG DAVID\\TFG\\TFG_David_Jimenez_Gutierrez\\Datos\\TCGAE_Todo.xlsx')
 X = df.drop(['Recurrencia', 'DFI'], axis=1)
-y = df.loc[:, ['Recurrencia', 'DFI']]
-
-# Evitar FutureWarning en Pandas
-y = y.replace({0: False, 1: True}).infer_objects(copy=False)
-
-# Convertir `y` a un array estructurado compatible con `sksurv`
+y = df[['Recurrencia', 'DFI']].replace({0: False, 1: True}).infer_objects(copy=False)
 y = y.to_records(index=False)
 
-# División en conjunto de entrenamiento y prueba
+# División del conjunto de datos en entrenamiento y prueba
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
 
 # Normalización de los datos
@@ -28,27 +24,27 @@ scaler = StandardScaler()
 X_train = scaler.fit_transform(X_train)
 X_test = scaler.transform(X_test)
 
-# Convertir a tensores de PyTorch
+# Conversión a tensores para pytorch
 X_train_t = torch.tensor(X_train, dtype=torch.float32)
 X_test_t = torch.tensor(X_test, dtype=torch.float32)
 y_train_t = torch.tensor(y_train['DFI'].copy(), dtype=torch.float32).view(-1, 1)
 y_test_t = torch.tensor(y_test['DFI'].copy(), dtype=torch.float32).view(-1, 1)
 
-# Definir Transformer para análisis de supervivencia
+# Creación del Modelo de Transformer
 class SurvivalTransformer(nn.Module):
     def __init__(self, input_dim, num_heads=4, num_layers=2, hidden_dim=64, dropout=0.5):
         super(SurvivalTransformer, self).__init__()
         self.embedding = nn.Linear(input_dim, hidden_dim)
         encoder_layers = nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=num_heads, dropout=dropout)
         self.transformer = nn.TransformerEncoder(encoder_layers, num_layers=num_layers)
-        self.fc = nn.Linear(hidden_dim, 1)  # Salida de riesgo de supervivencia
+        self.fc = nn.Linear(hidden_dim, 1)
 
     def forward(self, x):
         x = self.embedding(x)
         x = self.transformer(x.unsqueeze(1)).squeeze(1)
         return self.fc(x)
 
-# Función para entrenar el modelo y calcular el C-index
+# Entrenamiento del modelo
 def train_and_evaluate(seed):
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -58,9 +54,7 @@ def train_and_evaluate(seed):
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     loss_fn = nn.MSELoss()
 
-    # Entrenamiento
-    num_epochs = 100
-    for epoch in range(num_epochs):
+    for epoch in range(100):
         model.train()
         optimizer.zero_grad()
         predictions = model(X_train_t)
@@ -68,7 +62,6 @@ def train_and_evaluate(seed):
         loss.backward()
         optimizer.step()
 
-    # Evaluación
     model.eval()
     pred_risk = model(X_test_t).detach().numpy()
     c_index = concordance_index_censored(y_test['Recurrencia'], y_test['DFI'], -pred_risk[:, 0])[0]
@@ -80,10 +73,9 @@ best_seed = None
 best_c_index = 0
 best_model = None
 
-for seed in range(0, 100):  # Probar diferentes semillas
+for seed in range(0, 100):
     c_index, model = train_and_evaluate(seed)
     print(f"Semilla {seed} -> C-index: {c_index:.3f}")
-
     if c_index > best_c_index:
         best_c_index = c_index
         best_seed = seed
@@ -91,24 +83,32 @@ for seed in range(0, 100):  # Probar diferentes semillas
 
 print(f"\nMejor semilla encontrada: {best_seed} con C-index: {best_c_index:.3f}")
 
-# Usar el mejor modelo encontrado para las predicciones finales
+# Predicciones finales del modelo con la mejor semilla
 best_model.eval()
 pred_risk = best_model(X_test_t).detach().numpy()
+pred_risk = (pred_risk - np.min(pred_risk)) / (np.max(pred_risk) - np.min(pred_risk) + 1e-8)
 
-# Normalización del riesgo para curvas de supervivencia
-pred_risk = (pred_risk - np.min(pred_risk)) / (np.max(pred_risk) - np.min(pred_risk))
+# Preparación de los datos para el modelo de Cox real con lifelines (se utiliza sólo el riesgo como covariable)
+df_test = pd.DataFrame(X_test, columns=X.columns)
+df_test['duration'] = y_test['DFI']
+df_test['event'] = y_test['Recurrencia']
+df_test['risk_score'] = pred_risk
 
-# Generar curvas de supervivencia ajustadas
-time_range = np.linspace(0, 3650, 100)  # 10 años en días
-surv_funcs = np.exp(-np.exp(pred_risk[:, np.newaxis]) * time_range)
+# Ajuste del modelo Cox con función base para estimar las funciones de supervivencia
+cox_data = df_test[['duration', 'event', 'risk_score']].copy()
+cph = CoxPHFitter()
+cph.fit(cox_data, duration_col='duration', event_col='event')
 
-# Graficar las curvas de supervivencia
-plt.figure(figsize=(8, 6))
-for surv in surv_funcs:
-    plt.step(time_range, surv.flatten(), where="post", alpha=0.5)
+# Gráfico de curvas de supervivencia individuales (todos los pacientes del conjunto de test)
+plt.figure(figsize=(12, 8))
+for idx in range(len(cox_data)):
+    single_patient = cox_data.iloc[[idx]]
+    surv_func = cph.predict_survival_function(single_patient)
+    plt.plot(surv_func.index, surv_func.values.flatten(), label=f'Paciente {idx}', alpha=0.7)
 
-plt.ylim(0, 1)
-plt.xlabel("Tiempo (días)")
-plt.ylabel("Probabilidad de Supervivencia")
-plt.title(f"Curvas de Supervivencia - Transformer (Mejor semilla: {best_seed})")
+plt.title('Curvas de Supervivencia Individuales - Transformer (Validación)')
+plt.xlabel('Tiempo')
+plt.ylabel('Probabilidad de Supervivencia')
+plt.grid(True)
+plt.tight_layout()
 plt.show()
