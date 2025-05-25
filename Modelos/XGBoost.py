@@ -49,8 +49,14 @@ bst = xgb.train(params, train_dmatrix, num_round)
 # Obtención de la Importancia de las variables
 importance = bst.get_score(importance_type='gain')
 importance_df = pd.DataFrame(list(importance.items()), columns=['Variable', 'Importancia']).sort_values(by='Importancia', ascending=False)
+
+# Establecer los nombres reales de las variables
+feature_map = {f"f{i}": col for i, col in enumerate(X.columns)}
+importance_df['Variable_real'] = importance_df['Variable'].map(feature_map)
+
+# Mostrar la importancia con nombres reales
 print("Importancia de variables:")
-print(importance_df)
+print(importance_df[['Variable', 'Variable_real', 'Importancia']])
 
 # Predicción de riesgos
 pred_risk = bst.predict(test_dmatrix)

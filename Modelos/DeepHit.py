@@ -3,10 +3,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import random
 import os
-
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-
 import torch
 import torchtuples as tt
 from pycox.models import DeepHitSingle, CoxPH
@@ -131,3 +129,26 @@ else:
     plt.ylabel("Probabilidad de Supervivencia")
     plt.grid(True)
     plt.show()
+
+
+# Cálculo de la importancia de las variables basado en gradientes
+def calcular_importancia_variables(modelo, datos, nombres_vars):
+    datos_tensor = torch.tensor(datos, dtype=torch.float32, requires_grad=True)
+    pred = modelo.net(datos_tensor)  # salida [n_muestras, n_durations]
+    suma_pred = pred.sum(dim=1).mean()  # Promedio de la suma de riesgos
+    suma_pred.backward()  # retropropagación para obtener los gradientes
+
+    importancia = datos_tensor.grad.abs().mean(dim=0).detach().numpy()
+    importancia_normalizada = importancia / (importancia.sum() + 1e-8)
+
+    df_importancia = pd.DataFrame({
+        'Variable': nombres_vars,
+        'Importancia': importancia_normalizada
+    }).sort_values(by='Importancia', ascending=False)
+
+    return df_importancia
+
+# Calcular e imprimir importancia
+importancia_df = calcular_importancia_variables(best_model, X_test_std, X.columns)
+print("\nImportancia de las variables (DeepHit):")
+print(importancia_df)

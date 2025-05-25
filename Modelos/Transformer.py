@@ -112,3 +112,23 @@ plt.ylabel('Probabilidad de Supervivencia')
 plt.grid(True)
 plt.tight_layout()
 plt.show()
+
+
+# Obtención de la Importancia de las variables
+best_model.eval()
+X_test_t.requires_grad = True
+
+output = best_model(X_test_t)
+output.sum().backward()  
+
+# Obtención del gradiente medio absoluto para cada variable
+feature_importance = X_test_t.grad.abs().mean(dim=0).detach().numpy()
+
+# Mostrar la importancia de las variables
+importance_df = pd.DataFrame({
+    'Variable': X.columns,
+    'Importancia': feature_importance
+}).sort_values(by='Importancia', ascending=False)
+
+print("\nImportancia de las variables (estimada por gradientes):")
+print(importance_df)
